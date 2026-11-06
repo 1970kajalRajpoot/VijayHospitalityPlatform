@@ -1,0 +1,2 @@
+{% extends 'public/base.html' %}{% block title %}Hotel Facilities and Services | Vijay Hospitality, Manpur Gaya{% endblock %}{% block desc %}Facilities at Vijay Utsav and Vijay Garden: private bathrooms, housekeeping, reception, parking, 24-hour security and banquet hall.{% endblock %}
+{% block content %}<section class="sec"><div class="wrap"><div class="sec-h"><h1>Facilities and services</h1><p>Everything you need for a relaxed stay.</p></div><ul class="chips">{% for f in fac %}<li>{{f}}</li>{% endfor %}</ul></div></section>{% endblock %}

@@ -1,0 +1,2 @@
+{% extends 'admin/base.html' %}{% block title %}Audit log{% endblock %}
+{% block content %}<h1>Audit log</h1><div class="card tw"><table class="t"><tr><th>When</th><th>Who</th><th>Action</th><th>Entity</th><th>Detail</th></tr>{% for l in logs %}<tr><td>{{l.at}}</td><td>{{l.actor}}</td><td>{{l.action|label}}</td><td>{{l.entity}} {{l.entity_id}}</td><td>{{l.detail}}</td></tr>{% endfor %}</table></div>{% endblock %}

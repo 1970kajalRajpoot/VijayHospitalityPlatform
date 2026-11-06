@@ -1,0 +1,92 @@
+from flask import Blueprint,request,jsonify,session,current_app
+from ..db import get_db
+from ..security import rate_limit
+from ..services import booking as B,payments as P,notify,ai,dynamic_pricing as DP
+bp=Blueprint('api',__name__)
+def err(msg,code=400,fields=None):return jsonify(error=str(msg),fields=fields or {}),code
+@bp.get('/health')
+def health():
+    try:get_db().execute('SELECT 1');return jsonify(status='ok')
+    except Exception:return jsonify(status='error'),500
+@bp.get('/availability')
+@rate_limit('avail',60,60)
+def availability():
+    a=request.args
+    try:rs=B.search(get_db(),a.get('check_in',''),a.get('check_out',''),a.get('adults',1),a.get('children',0),category_id=a.get('category_id') or None,property_id=a.get('property_id') or None)
+    except B.Invalid as e:return err(e,400,e.errors)
+    return jsonify(count=len(rs),rooms=[dict(room_id=r['id'],number=r['number'],property=r['pname'],category=r['cat_name'],ac=bool(r['ac']),nights=r['quote']['nights'],price_per_night_paise=r['quote']['avg'],tax_paise=r['quote']['tax'],total_paise=r['quote']['total'],amenities=r['amenities']) for r in rs])
+@bp.get('/price-calendar')
+@rate_limit('pricecalendar',60,60)
+def price_calendar():
+    try:
+        days=DP.calendar(get_db(),request.args.get('category_id',''),request.args.get('start',''),request.args.get('months','1'))
+        return jsonify(days=days)
+    except (ValueError,TypeError) as e:return err(e)
+@bp.get('/price-quote')
+@rate_limit('pricequote',60,60)
+def price_quote():
+    try:
+        ci,co,_,_=B.validate_stay(request.args.get('check_in',''),request.args.get('check_out',''),1,0)
+        q=DP.quote(get_db(),request.args.get('category_id',''),ci,co)
+        q['tax_paise']=round(q['room_total_paise']*current_app.config['TAX_PERCENT']/100)
+        q['total_paise']=q['room_total_paise']+q['tax_paise']
+        return jsonify(q)
+    except B.Invalid as e:return err(e,400,e.errors)
+    except (ValueError,TypeError) as e:return err(e)
+@bp.get('/media')
+@rate_limit('media',60,60)
+def media_list():
+    kind=request.args.get('kind','')
+    if kind not in('slide','gallery','room'):return err('Choose a valid media kind.')
+    sql='SELECT id,kind,property_id,category_id,title,caption,link_url,path,sort FROM site_media WHERE kind=? AND active=1'
+    args=[kind]
+    for field in ('property_id','category_id'):
+        raw=request.args.get(field)
+        if raw:
+            try:ident=int(raw)
+            except ValueError:return err(f'Invalid {field}.')
+            sql+=f' AND {field}=?';args.append(ident)
+    rows=[dict(r) for r in get_db().execute(sql+' ORDER BY sort,id',args)]
+    return jsonify(items=rows)
+@bp.post('/bookings')
+@rate_limit('apibook',10,600)
+def create_booking():
+    j=request.get_json(silent=True) or {};db=get_db()
+    if j.get('website'):return err('Rejected',400)
+    try:res=B.create_reservation(db,j.get('room_id'),j.get('check_in',''),j.get('check_out',''),j.get('adults',1),j.get('children',0),j.get('name'),j.get('phone'),j.get('email'),source='web',notes=(j.get('notes') or '')[:300])
+    except B.Unavailable as e:return err(e,409)
+    except B.BookingError as e:return err(e,400,e.errors)
+    session['refs']=(session.get('refs',[])+[res['ref']])[-10:];notify.send(db,res['id'],'booking_confirmed')
+    return jsonify(reference=res['ref'],status=res['status'],total_paise=res['total_paise']),201
+@bp.post('/payments/order')
+@rate_limit('payorder',10,600)
+def payment_order():
+    ref=(request.get_json(silent=True) or {}).get('reference','');db=get_db()
+    if ref not in session.get('refs',[]) and session.get('manage')!=ref:return err('Not allowed',403)
+    try:return jsonify(P.create_order(db,B.get_res(db,ref=ref)['id']))
+    except P.NotConfigured:return err('Online payment is not available right now.',503)
+    except (P.PaymentError,B.BookingError) as e:return err(e,400)
+@bp.post('/payments/verify')
+@rate_limit('payverify',20,600)
+def payment_verify():
+    j=request.get_json(silent=True) or {};db=get_db()
+    try:
+        res=P.verify(db,j.get('razorpay_order_id'),j.get('razorpay_payment_id'),j.get('razorpay_signature'));notify.send(db,res['id'],'payment_received')
+        return jsonify(status=res['status'],reference=res['ref'])
+    except P.PaymentError as e:return err(e,400)
+@bp.post('/payments/failed')
+@rate_limit('payfail',20,600)
+def payment_failed():
+    j=request.get_json(silent=True) or {};P.mark_failed(get_db(),j.get('order_id'),str(j.get('reason',''))[:100]);return jsonify(ok=True)
+@bp.post('/payments/webhook')
+def payment_webhook():
+    try:t=P.webhook(get_db(),request.get_data(),request.headers.get('X-Razorpay-Signature',''));return jsonify(ok=True,event=t)
+    except P.NotConfigured:return err('Webhook not configured',503)
+    except Exception as e:current_app.logger.warning('webhook rejected: %s',type(e).__name__);return err('Rejected',400)
+@bp.post('/chat')
+@rate_limit('chat',25,60)
+def chat():
+    j=request.get_json(silent=True) or {};db=get_db()
+    out=ai.reply(db,session.get('chat_token') or j.get('token'),j.get('message',''));session['chat_token']=out['token']
+    if out.get('booking'):session['refs']=(session.get('refs',[])+[out['booking']])[-10:]
+    return jsonify(reply=out['reply'],status=out.get('status'),booking=out.get('booking'))
