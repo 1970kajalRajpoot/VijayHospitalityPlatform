@@ -87,6 +87,40 @@ class Web(Base):
         s=R.summary(self.db,day(0),day(1));self.assertEqual(s['nights_sold'],2);self.assertEqual(s['bookings'],1);self.assertEqual(s['ac'],2)
         c,_=self.login();self.assertEqual(c.get('/admin/reports').status_code,200)
         x=c.get('/admin/bookings/export.xlsx');self.assertTrue(x.data.startswith(b'PK'));self.assertTrue(c.get('/admin/reports/export.pdf').data.startswith(b'%PDF'))
+    def test_daily_report_series_has_zero_days_and_actual_event_counts(self):
+        from app.services import booking as B,reports as R
+        u={'id':1,'email':'x'}
+        checked=self.book(1,ci=0,co=1)
+        cancelled=self.book(2,ci=0,co=1,phone='9812345678')
+        P.record_manual(self.db,checked['id'],'cash',100000,'',u)
+        B.check_in(self.db,checked['id'],u)
+        B.check_out(self.db,checked['id'],u)
+        B.cancel(self.db,cancelled['id'],'test cancellation',u)
+
+        rows=R.series(self.db,day(-1),day(1),'day')
+        self.assertEqual([row['label'] for row in rows],[day(-1),day(0),day(1)])
+        today_row=rows[1]
+        self.assertEqual(today_row['bookings'],2)
+        self.assertEqual(today_row['booked'],checked['total_paise']+cancelled['total_paise'])
+        self.assertEqual(today_row['collected'],100000)
+        self.assertEqual(today_row['cancels'],1)
+        self.assertEqual(today_row['checkins'],1)
+        self.assertEqual(today_row['checkouts'],1)
+        self.assertTrue(all(not row[key] for row in (rows[0],rows[2]) for key in ('bookings','booked','collected','cancels','checkins','checkouts')))
+        self.assertEqual(R.series_totals(rows),dict(bookings=2,booked=checked['total_paise']+cancelled['total_paise'],collected=100000,cancels=1,checkins=1,checkouts=1))
+        chart=R.svg_bars(rows,'bookings')
+        self.assertIn('viewBox="0 0 360 100"',chart)
+        self.assertEqual(chart.count('<text '),3)
+        c,_=self.login()
+        dashboard=c.get('/admin/')
+        reports=c.get('/admin/reports',query_string={'from':day(-1),'to':day(1)})
+        self.assertEqual(dashboard.status_code,200)
+        self.assertEqual(reports.status_code,200)
+        for page in (dashboard,reports):
+            html=page.get_data(as_text=True)
+            self.assertEqual(html.count('class="kpi trend-kpi"'),6)
+            self.assertIn('Bookings created per day',html)
+            self.assertIn('Booked value by day created',html)
     def test_security_headers_xss_and_sql_injection(self):
         c=self.app.test_client();r=c.get('/');self.assertIn("default-src 'self'",r.headers['Content-Security-Policy']);self.assertEqual(r.headers['X-Frame-Options'],'DENY')
         self.book(1,name='<script>alert(1)</script>',phone='9855555555');oc,_=self.login();page=oc.get('/admin/bookings').get_data(as_text=True);self.assertNotIn('<script>alert(1)</script>',page);self.assertIn('&lt;script&gt;',page)

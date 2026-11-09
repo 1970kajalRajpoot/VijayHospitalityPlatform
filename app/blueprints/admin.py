@@ -31,7 +31,7 @@ def dashboard():
     db=get_db();B.expire_holds(db);t=today().isoformat()
     ar=R.booking_rows(db,status='confirmed',ci_from=t,ci_to=t);dp=R.booking_rows(db,status='checked_in',limit=200);dp=[r for r in dp if r['check_out']==t]
     ser=R.series(db,(today()-dtm.timedelta(days=13)).isoformat(),t,'day')
-    return render_template('admin/dashboard.html',k=R.dashboard(db),arr=ar,dep=dp,ser=ser,svg=R.svg_bars,upcoming=R.booking_rows(db,status='confirmed',ci_from=(today()+dtm.timedelta(days=1)).isoformat(),limit=8))
+    return render_template('admin/dashboard.html',k=R.dashboard(db),arr=ar,dep=dp,ser=ser,kpi_totals=R.series_totals(ser),period='day',svg=R.svg_bars,upcoming=R.booking_rows(db,status='confirmed',ci_from=(today()+dtm.timedelta(days=1)).isoformat(),limit=8))
 # ---- rooms & categories
 @bp.get('/rooms')
 @require('rooms')
@@ -377,9 +377,11 @@ def reception():
 @require('reports')
 def reports():
     db=get_db();a=request.args;end=a.get('to') or today().isoformat();start=a.get('from') or (today()-dtm.timedelta(days=29)).isoformat();grp=a.get('group','day') if a.get('group') in('day','month','year') else 'day'
-    try:d(start);d(end)
+    try:
+        if d(start)>d(end):raise ValueError
     except Exception:flash('Choose valid dates.','error');start=(today()-dtm.timedelta(days=29)).isoformat();end=today().isoformat()
-    return render_template('admin/reports.html',s=R.summary(db,start,end),ser=R.series(db,start,end,grp),start=start,end=end,grp=grp,svg=R.svg_bars)
+    ser=R.series(db,start,end,grp)
+    return render_template('admin/reports.html',s=R.summary(db,start,end),ser=ser,kpi_totals=R.series_totals(ser),start=start,end=end,grp=grp,period=grp,svg=R.svg_bars)
 @bp.get('/reports/export.<fmt>')
 @require('reports')
 def reports_export(fmt):
